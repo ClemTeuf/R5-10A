@@ -34,4 +34,11 @@ public class MongoGameCatalog : IGameCatalog
             .SortByDescending(s => s.NoteMoyenne)
             .ToListAsync();
     }
+
+    public async Task<Game?> GetByTitleAsync(string titre) =>
+        await _jeux.Find(g => g.Titre == titre).FirstOrDefaultAsync();
+
+    // { titre: { $in: [...] } } : un aller-retour, quel que soit le nombre de jeux (pas un Find par titre).
+    public async Task<List<Game>> GetByTitlesAsync(IEnumerable<string> titres) =>
+        await _jeux.Find(Builders<Game>.Filter.In(g => g.Titre, titres)).ToListAsync();
 }

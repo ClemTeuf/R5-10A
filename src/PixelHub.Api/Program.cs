@@ -4,6 +4,8 @@ using PixelHub.Api.Models;
 using MongoDB.Driver;
 using PixelHub.Api.Repositories;
 using StackExchange.Redis;
+using Neo4j.Driver;
+using PixelHub.Api.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -29,6 +31,23 @@ builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
     ConnectionMultiplexer.Connect(builder.Configuration.GetConnectionString("Redis")!));
 
 builder.Services.AddSingleton<ILeaderboard, RedisLeaderboard>();
+
+// ---------- Neo4j (séance 4) ----------
+// Le driver est partagé (singleton) ; la session, elle, est jetable, une par opération (Q12).
+builder.Services.AddSingleton<IDriver>(_ =>
+    GraphDatabase.Driver(
+        builder.Configuration["Neo4j:Uri"],
+        AuthTokens.Basic(
+            builder.Configuration["Neo4j:User"],
+            builder.Configuration["Neo4j:Password"])));
+
+builder.Services.AddSingleton<ISocialGraph, Neo4jSocialGraph>();
+
+// ---------- Séance 4 bis — l'application à quatre moteurs ----------
+builder.Services.AddSingleton<RedisSales>();
+// Scoped, et non singleton : ces services utilisent le DbContext, qui est scoped (une instance par requête).
+builder.Services.AddScoped<ShopService>();
+builder.Services.AddScoped<PlayerProfileService>();
 
 var app = builder.Build();
 
@@ -83,6 +102,55 @@ app.MapGet("/games/timed", async (IGameCatalog catalog) =>
     var jeux = await catalog.GetAllAsync();
     chrono.Stop();
     return new { nombre = jeux.Count, millisecondes = chrono.Elapsed.TotalMilliseconds };
+});
+
+// ---------- Séance 4 — Neo4j ----------
+app.MapGet("/social/{pseudo}/friends",
+    async (string pseudo, ISocialGraph g) => await g.GetFriendsAsync(pseudo));
+
+app.MapGet("/social/{pseudo}/recommendations",
+    async (string pseudo, int? depth, ISocialGraph g) =>
+        await g.RecommendGamesAsync(pseudo, depth ?? 2));
+
+app.MapGet("/social/{pseudo}/friend-suggestions",
+    async (string pseudo, ISocialGraph g) => await g.SuggestFriendsAsync(pseudo));
+
+// ---------- Séance 4 bis — la boutique (mission 2) ----------
+app.MapPost("/shop/{pseudo}/buy/{titre}", async (string pseudo, string titre, ShopService shop) =>
+{
+    var r = await shop.BuyAsync(pseudo, titre);
+    return r.Statut switch
+    {
+        AchatStatut.Ok => Results.Ok(r.Recu),
+        AchatStatut.JeuInconnu => Results.NotFound(new { erreur = $"Jeu inconnu : {titre}" }),
+        AchatStatut.JoueurInconnu => Results.NotFound(new { erreur = $"Joueur inconnu : {pseudo}" }),
+        AchatStatut.SoldeInsuffisant => Results.Conflict(new { erreur = "Solde insuffisant" }),
+        AchatStatut.DejaPossede => Results.Conflict(new { erreur = "Jeu déjà acheté" }),
+        _ => Results.StatusCode(500)
+    };
+});
+
+app.MapGet("/shop/bestsellers", async (RedisSales ventes) => await ventes.GetTopAsync(3));
+
+// ---------- Séance 4 bis — la fiche joueur (mission 3) ----------
+app.MapGet("/players/{pseudo}/profile", async (string pseudo, PlayerProfileService profils) =>
+    await profils.GetAsync(pseudo) is { } profil ? Results.Ok(profil) : Results.NotFound());
+
+// ---------- Séance 4 bis — reconstruire les projections depuis la source de vérité (mission 4) ----------
+app.MapPost("/admin/resync", async (PixelHubContext db, ISocialGraph g, RedisSales ventes) =>
+{
+    var achats = await db.Purchases
+        .Join(db.Players, a => a.PlayerId, p => p.Id, (a, p) => new { p.Pseudo, a.Titre, a.Date })
+        .ToListAsync();
+
+    foreach (var a in achats)                                      // MERGE : rejouable sans doublon
+        await g.AddOwnershipAsync(a.Pseudo, a.Titre, a.Date.Year);
+
+    await ventes.ReplaceAllAsync(achats
+        .GroupBy(a => a.Titre)
+        .Select(groupe => new GameSales(groupe.Key, groupe.Count())));
+
+    return Results.Ok(new { achatsRejoues = achats.Count });
 });
 
 app.Run();

@@ -47,3 +47,41 @@ POST {{host}}/leaderboard/Ombre/points/75
 ### Consulter le top 3
 GET {{host}}/leaderboard/top/3
 Accept: application/json
+
+### Consulter les amis de Krayz
+GET {{host}}/social/Krayz/friends
+
+### Consulter les recommandations de Nova
+GET {{host}}/social/Nova/recommendations
+
+### Séance 4 bis — boutique : Nova achète Terraria (1200 pièces)
+POST {{host}}/shop/Nova/buy/Terraria
+
+### Séance 4 bis — boutique : un titre avec espaces et apostrophe s'encode dans l'URL
+POST {{host}}/shop/Nova/buy/Baldur%27s%20Gate%203
+
+### Séance 4 bis — boutique : jeu gratuit (FPS à 0 pièce)
+POST {{host}}/shop/Nova/buy/Valorant
+
+### Séance 4 bis — boutique : jeu inconnu (404)
+POST {{host}}/shop/Nova/buy/Tetris
+
+### Séance 4 bis — meilleures ventes (Redis)
+GET {{host}}/shop/bestsellers
+Accept: application/json
+
+### Séance 4 bis — fiche joueur (4 moteurs dans une réponse)
+GET {{host}}/players/Nova/profile
+Accept: application/json
+
+### Mission 4 — Ombre achète Rocket League, Neo4j arrêté
+POST {{host}}/shop/Ombre/buy/Rocket%20League
+
+###  
+GET {{host}}/players/Ombre/profile
+
+###
+GET {{host}}/social/Ombre/recommendations
+
+### Séance 4 bis — mission 4 : reconstruire Neo4j et Redis depuis PostgreSQL
+POST {{host}}/admin/resync

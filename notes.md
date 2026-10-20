@@ -165,3 +165,163 @@ Pour réduire ce délai, on peut utiliser deux stratégies :
 
 - réduire la durée du TTL, par exemple à 10 secondes, afin d'actualiser plus souvent, mais cela sollicite plus souvent MongoDB
 - invalider le cache lors d'une modification, en supprimant la clé cache:catalogue:tous après la mise à jour du jeu
+
+TP4 - Neo4j, puis PixelHub à quatre moteurs
+
+Partie 1 — Neo4j
+
+Q1. Si on lançait le script deux fois avec CREATE, Neo4j créerait à nouveau les mêmes nœuds et relations, on aurait donc des doublons dans le graphe. Au contraire, MERGE cherche si le nœud existe déjà et ne le recrée pas s'il existe.
+Les trois CREATE CONSTRAINT servent à garantir l'unicité de certains identifiants dans le graphe. Elles empêchent notamment d'avoir deux nœuds représentant le même joueur, le même jeu ou la même guilde avec le même identifiant.
+
+Q2. Sans flèche → 2 résultats
+Avec -> → 1 résultat
+Sans flèche, on demande les relations AMI_DE dans n'importe quelle direction. On récupère donc les deux joueurs reliés à Krayz, peu importe le sens de la relation.
+Avec flèche, on demande uniquement les relations qui partent de Krayz. Il n'y en a qu'une.
+Ici, si AMI_DE représente une relation d'amitié qui devrait être réciproque, le modèle pourrait être considéré comme incomplet si une seule direction est enregistrée, mais la requête avec -> est correcte par rapport aux données réellement présentes : elle respecte la direction enregistrée dans Neo4j.
+Il n'y a pas d'erreur envoyée car Neo4j considère une relation comme orientée par nature, mais il ne sait pas que AMI_DE est censée être réciproque.
+
+Q3. Avec count(DISTINCT ami), on compte le nombre d'amis différents de Nova qui possèdent le jeu.
+Avec count(*), on compte le nombre de chemins/résultats trouvés, donc un même ami peut être compté plusieurs fois s'il existe plusieurs chemins permettant d'arriver jusqu'à lui.
+Pour passer de *1..2 à \*1..4, on change une seule ligne dans la requête. En SQL, il faudrait généralement écrire plusieurs niveaux de jointures/CTE pour parcourir successivement les relations :
+Nova → amis
+Nova → amis d'amis
+Nova → niveau 3
+Nova → niveau 4
+
+Q4. Stardew Valley n'apparaît jamais parce que Nova possède déjà ce jeu.
+
+Q5. Parce que Neo4j utilise deux ports pour deux services différents :
+
+- 17474 → port de l'interface web accessible depuis le navigateur
+- 17687 → port utilisé par l'application pour communiquer avec Neo4j
+
+Q6. Les paramètres $pseudo protègent les valeurs. La profondeur doit être interpolée car elle fait partie de la syntaxe du chemin. Comme elle est interpolée, il faut impérativement la valider/born­er avant. Ici : 1 ≤ profondeur ≤ 4.
+
+Q7. Le IDriver est un singleton parce qu'il est conçu pour être partagé par toute l'application. Il gère les connexions à Neo4j et évite de recréer un driver à chaque requête.
+La session est créée dans chaque méthode avec AsyncSession(), puis libérée automatiquement grâce à await using à la fin de l'opération.
+Cela permet de ne pas conserver inutilement des sessions ouvertes et de gérer correctement les ressources.
+
+Partie 2 — PixelHub ouvre sa boutique
+
+Q8. Les guillemets doubles servent à respecter la casse des identifiants PostgreSQL. Sans guillemets, les noms sont convertis en minuscules.
+
+Q9. UNIQUE ("PlayerId", "Titre") garantit qu'un même joueur ne peut acheter qu'une seule fois un jeu donné dans la table Purchases.
+CHECK ("Coins" >= 0) garantit que le solde d'un joueur ne peut jamais être négatif.
+UPDATE "Players" SET "Coins" = -1 WHERE "Pseudo" = 'Ombre'; PostgreSQL refuse la modification et renvoie une erreur de contrainte CHECK car -1 est inférieur à 0.
+
+Q10. La première commande fixe le prix de tous les jeux à 800 (11 modifiedCount), la deuxième fixe le prix des jeux ayant une supérieure ou égale à 4,7 à 1200 (4 modifiedCount), et la troisième fixe le prix des jeux de genre FPS à 0 (2 modifiedCount). modifiedCount indique le nombre de documents réellement modifiés.
+Aucun document n'a été réécrit en entier : l'opérateur $set modifie uniquement le champ prix, en conservant les autres champs du document.
+En SQL, on aurait utilisé plusieurs requêtes UPDATE :
+UPDATE Jeux SET prix = 800;
+UPDATE Jeux SET prix = 1200 WHERE note >= 4.7;
+UPDATE Jeux SET prix = 0 WHERE genre = 'FPS';
+Si on lançait la première commande en dernier, tous les jeux auraient finalement un prix de 800, car la première commande écraserait les prix précédemment définis à 1200 et à 0.
+
+Q11. La valeur en cache ne contient pas encore les prix : la classe Game de l'API ne contient pas le champ prix, donc la réponse mise en cache ne peut pas le renvoyer, même si MongoDB contient désormais les prix.
+L'API servira un catalogue sans prix au maximum 60 secondes.
+DEL cache:catalogue:tous force la mise à jour immédiatement.
+
+Q12. 127.0.0.1:6379> ZREVRANGE classement:global 0 2 WITHSCORES
+
+1. "Krayz"
+2. "5200"
+3. "Ombre"
+4. "5100"
+5. "Nova"
+6. "4500"
+
+   127.0.0.1:6379> KEYS \*
+
+1) "classement:global"
+2) "ventes:jeux"
+3) "compteur:parties"
+4) "joueur:7"
+5) "file:matchmaking"
+
+Q13. Luna existe pour Neo4j, mais pas PostgreSQL.
+PostgreSQL est la source de vérité pour les joueurs et leur solde. Luna n'existant pas dans PostgreSQL, l'achat doit échouer : : aucune ligne de joueur ne pourra être débitée et la clé étrangère PlayerId de la table Purchases empêchera d'enregistrer un achat qui référence un joueur inexistant.
+
+Q14. ExecuteUpdateAsync permet de modifier directement les données en base de données, sans charger puis modifier l'entité en C#. La requête SQL correspondante est la suivante :
+UPDATE "Players"
+SET "Coins" = "Coins" - @prix
+WHERE "Id" = @playerId
+AND "Coins" >= @prix;
+Avec une vérification en C#, deux achats simultanés pourraient lire le même solde avant de le modifier. On risque alors un débit incorrect ou un écrasement de mise à jour. Avec ExecuteUpdateAsync, le test du solde et le débit sont effectués dans une seule instruction SQL.
+
+Q15. AnyAsync ne suffit pas, car deux requêtes peuvent s'exécuter simultanément. Si deux requêtes identiques arrivent à la même milliseconde, le code intercepte l'exception UniqueViolation et renvoie DejaPossede. Il ne faut pas faire ce test dans Neo4j, car PostgreSQL est la source de vérité pour les achats et les débits.
+
+Q16. L'achat ne passe pas, car Krayz possède déjà Valorant, et ceci est vérifié dans PostgreSQL, et non Neo4j.
+PostgreSQL fait foi pour les achats. La table "Purchases" est la source de vérité : elle conserve la trace des achats réellement effectués et le prix payé.
+Les données importées manuellement dans un graphe peuvent représenter un état initial fictif ou préexistant, différent de l'historique réel de la boutique. Il faut donc distinguer PostgreSQL avec les achats réels, débits et historique faisant foi, et Neo4j le graphe des possessions utilisé pour les recommandations mais qui doit être synchronisé avec PostgreSQL.
+
+Mission 3 — La fiche joueur : quatre moteurs, une réponse
+
+Q18. La fiche joueur interroge les 4 moteurs de bases de données pour construire une seule réponse API.
+PostgreSQL : 2 requêtes, Informations du joueur et solde, puis nombre d'achats
+Redis : 1 requête, Rang du joueur
+Neo4j : 2 requêtes, Liste des amis, puis jeux possédés
+MongoDB : 1 requête, Fiches complètes des jeux possédés
+=> 6 requêtes envoyées aux moteurs
+Dans le cas où Nova possédait 200 jeux :
+
+- avec GetByTitlesAsync : 1 requête MongoDB, grâce au filtre $in, qui recherche tous les titres en une seule fois
+- avec une boucle de GetByTitleAsync : 200 requêtes MongoDB, une par jeu
+
+Q19. PostgreSQL décide que Luna n'existe pas dans le contexte de la fiche joueur.
+Est-ce le bon choix ? Oui, pour cette architecture. La fiche joueur nécessite un compte existant dans PostgreSQL, notamment pour récupérer le solde et le nombre d'achats.
+
+Mission 4 — Casser, constater, réparer
+
+Q20. Le code HTTP obtenu est 500 Internal Server Error.
+Ombre n'a pas été débité : il reste les 1000 + les 90 qu'il avait avant, l'achat est dans Purchases, comme le précise la ligne 4 | 3 | Rocket League | 0 | 2026-10-20 11:37:38.288849+00
+Il reçoit une erreur de l'API et peut penser que son achat a échoué, alors que l'achat est déjà enregistré dans PostgreSQL. Les données sont donc incohérentes : l'achat existe, mais son prix n'a pas été prélevé.
+En ce qui concerne l'attente de 30 secondes, l'application attend probablement l'expiration du délai de connexion à Neo4j ou de plusieurs tentatives de connexion avant de renvoyer l'erreur.
+
+Q21. Quand Ombre réessaie d'acheter Rocket League, l'achat ne devrait pas être enregistré une deuxième fois et il ne devrait pas être débité deux fois. Cela est rendu possible par la vérification de l'existence de l'achat dans la table "Purchases" et par la contrainte d'unicité en base de données.
+
+Q22. L'achat de Rocket League est enregistré dans Purchases avec PrixPaye = 0, alors qu'Ombre n'a pas été débité. L'enregistrement de l'achat est donc incorrect.
+La relation entre Ombre et Rocket League est absente, puisque Neo4j était arrêté au moment de l'achat. Le graphe ne reflète alors pas l'achat enregistré dans PostgreSQL.
+
+Q23. MERGE rend la reconstruction Neo4j rejouable sans doublons, tandis que PostgreSQL reste la source de vérité et Redis une projection reconstruisible.
+
+Q24.
+SOLDE DE MONNAIE :
+Sole de référence : PostgreSQL (Players.Coins)
+Projection(s) : Aucune
+Se reconstruit à partir de : PostgreSQL
+Retard acceptable : Non
+
+« Ombre a acheté Rocket League » :
+Sole de référence : PostgreSQL (Purchases)
+Projection(s) : Neo4j (POSSEDE)
+Se reconstruit à partir de : PostgreSQL (Purchases)
+Retard acceptable : Oui, temporairement
+
+Prix courant d'un jeu :
+Sole de référence : MongoDB (games)
+Projection(s) : Cache Redis (cache:catalogue:tous)
+Se reconstruit à partir de : MongoDB
+Retard acceptable : Oui, pendant le TTL du cache
+
+Prix payé par Ombre :
+Sole de référence : PostgreSQL (Purchases.PrixPaye)
+Projection(s) : Aucune
+Se reconstruit à partir de : PostgreSQL (historique d'achat)
+Retard acceptable : Non
+
+Meilleures ventes :
+Sole de référence : PostgreSQL (Purchases)
+Projection(s) : Redis (classement:ventes)
+Se reconstruit à partir de : PostgreSQL, en comptant les achats par jeu
+Retard acceptable : Oui, temporairement
+
+Catalogue complet :
+Sole de référence : MongoDB
+Projection(s) : Cache Redis (cache:catalogue:tous)
+Se reconstruit à partir de : MongoDB
+Retard acceptable : Oui, pendant le TTL du cache
+
+Q25. Même si MongoDB fonctionne parfaitement, /games échoue parce que l'endpoint dépend de Redis pour gérer le cache du catalogue. Lorsque Redis est arrêté, l'application tente d'accéder au cache et rencontre une erreur.
+Le cache, initialement destiné à améliorer les performances, est donc devenu une dépendance critique : au lieu d'être une simple optimisation, il peut empêcher l'accès au catalogue lorsque Redis est indisponible.
+
+Q26. On peut tolérer une panne de Redis car Redis contient des données secondaires ou temporaires, alors que PostgreSQL contient les données de référence indispensables aux opérations de la boutique.

@@ -29,4 +29,9 @@ public class Game
 
     [BsonElement("tags")]
     public List<string> Tags { get; set; } = new();
+
+    // Séance 4 bis : le prix courant, en pièces. Ajouté par un updateMany : aucun document n'a été réécrit.
+    // Un document sans prix donne 0 (jeu gratuit) : c'est le prix d'un schéma souple.
+    [BsonElement("prix")]
+    public int Prix { get; set; }
 }
