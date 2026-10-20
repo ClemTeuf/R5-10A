@@ -33,3 +33,17 @@ Accept: application/json
 ### Séance 2 — agrégation : note moyenne par genre
 GET {{host}}/games/stats
 Accept: application/json
+
+
+### Séance 3 — ajouter des points à trois joueurs
+POST {{host}}/leaderboard/Nova/points/100
+
+### Ajouter des points à Krayz
+POST {{host}}/leaderboard/Krayz/points/250
+
+### Ajouter des points à Ombre
+POST {{host}}/leaderboard/Ombre/points/75
+
+### Consulter le top 3
+GET {{host}}/leaderboard/top/3
+Accept: application/json

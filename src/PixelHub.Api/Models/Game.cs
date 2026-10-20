@@ -1,5 +1,6 @@
 using MongoDB.Bson;
 using MongoDB.Bson.Serialization.Attributes;
+using System.Text.Json.Serialization;
 
 namespace PixelHub.Api.Models;
 
@@ -8,6 +9,7 @@ public class Game
 {
 
     [BsonId]
+    [JsonConverter(typeof(ObjectIdJsonConverter))]
     public ObjectId Id { get; set; }
 
     [BsonElement("titre")]

@@ -80,3 +80,88 @@ ORDER BY note_moyenne DESC;
 ```
 
 Les deux requêtes font donc exactement le même travail : elles regroupent les jeux par genre, calculent la note moyenne et le nombre de jeux, puis trient les résultats par note moyenne décroissante. Ce n'est pas sur cette agrégation que MongoDB apporte un avantage particulier par rapport à PostgreSQL qui est tout à fait capable de réaliser ce type de requête efficacement : l'intérêt de MongoDB dans ce TP se situe plutôt dans sa souplesse de modèle : les documents peuvent avoir des champs différents, des tableaux comme plateformes et tags, ou des champs spécifiques comme joueursParEquipe sans modifier la structure de toute la collection.
+
+TP 3 — Classements, matchmaking et cache avec Redis
+
+Partie 1 — Les structures dans redis-cli
+
+Q1. INCR est une opération atomique, cela veut dire que Redis effectue l'incrémentation en une seule opération. Par exemple, si 1000 joueurs terminent une partie en même temps, chaque commande INCR compteur:parties est traitée sans qu'aucune autre commande puisse venir modifier la valeur entre la lecture et l'écriture.
+En SQL, on pourrait faire :
+
+```SQL
+UPDATE compteur
+SET valeur = valeur + 1
+WHERE nom = 'parties';
+```
+
+Q2. Si on avait stocké tout le joueur en JSON dans un String Redis, pour ajouter 250 XP, il aurait fallu :
+
+- Faire un GET joueur:7 pour récupérer le JSON
+- Désérialiser le JSON en objet
+- Modifier xp : 3400 + 250 = 3650
+- Sérialiser l'objet en JSON
+- Faire un SET joueur:7 avec le nouveau JSON
+  Cependant, les deux opérations ne sont pas atomiques, avec les deux opérations on devrait obtenir 3900, mais la deuxième opération écraserait la première.
+
+Q3. ZREVRANGE classement:global 0 2 WITHSCORES -> renvoie les joueurs avec les scores les plus élevés en premier
+ZRANGE classement:global 0 2 WITHSCORES -> renvoie les joueurs avec les scores les plus faibles en premier
+Pour afficher un "top 3", on utiliserait : ZREVRANGE classement:global 0 2 WITHSCORES
+
+Q4. ZREVRANK renvoie renvoie un rang commençant par 0. Si on l'affiche ce nombre tel quel au joueur, il va croire qu'il est le "0ème", il faut donc ajouter +1 au résultat de ZREVRANK.
+
+Q5. Au RPOP, Nova sort car il est en bout de liste. À l'inverse, au LPOP, Ombre sort car il est en tête de liste.
+
+Q6. Au départ, on obtient un chiffre entre 0 et 30 en première ligne, et 1 sur la seconde. Sans expiration, TTL renvoie -1. Résultat : un chiffre nul ou positif correspond au nombre de secondes avant expiration, -1 correspond à une clé sans expiration, et -2 correspond à une clé inexistante ou expirée.
+
+Q7. Avec PostgreSQL, il aurait fallu stocker la date d'expiration dans une table, puis mettre en place dans une tâche périodique pour supprimer les joueurs dont la présence a expiré.
+
+```SQL
+CREATE TABLE joueurs_en_ligne (
+    pseudo VARCHAR(50) PRIMARY KEY,
+    expire_le TIMESTAMP NOT NULL
+);
+
+-- date d'expiration
+INSERT INTO joueurs_en_ligne (pseudo, expire_le)
+VALUES ('Nova', NOW() + INTERVAL '30 seconds');
+
+-- nettoyage
+DELETE FROM joueurs_en_ligne
+WHERE expire_le <= NOW();
+```
+
+Ce code introduit plusieurs risques :
+
+- nettoyage en retard, si un joueur expire avant le nettoyage, on ne le sait pas
+- charge supplémentaire, on interroge régulièrement la BDD et supprime les lignes expirées
+
+Partie 2 — Redis dans PixelHub
+
+Q8. Le ConnectionMultiplexer est l'objet principal de StackExchange.Redis qui gère les connexions entre l'application C# et le serveur Redis. Il est conçu pour être partagé et réutilisé pendant toute la durée de vie de l'application.
+Si on en créait un à chaque requête HTTP, cela entraînerait plusieurs problèmes :
+
+- des connexions inutiles : chaque requête créerait de nouvelles connexions à Redis
+- des performances réduites : la création répétée des connexions consommerait du temps et des ressources
+- du risque de saturation : le nombre de connexions et de sockets pourrait devenir beaucoup trop important
+  Le bug serait invisible car on fait peu de requêtes dans le TP.
+
+Q9. Si on supprime Order.Descending, Redis renvoie les joueurs du score le plus faible au score le plus élevé, au lieu d'afficher les meilleurs joueurs en premier. En plus d'être visiblement faux, ce bug est particulièrement dangereux car aucune erreur n'est affichée et les scores restent corrects dans Redis.
+
+Q12.
+
+Partie 3 — Mesurer, et se méfier de la mesure
+
+Q13. Lors du premier appel à /games/timed, il y a un cache miss : les données sont récupérées depuis MongoDB, puis enregistrées dans Redis pendant 60 secondes. Le temps de réponse devrait donc être plus élevé.
+Lors des appels suivants, il y a des cache hits : les données sont directement récupérées depuis Redis, ce qui devrait réduire le temps de réponse. Après 60 secondes, le cache expire et un nouvel appel doit récupérer les données depuis MongoDB.
+Le gain n'est cependant pas spectaculaire : dans le TP, le catalogue contient peu de jeux et MongoDB fonctionne en local.
+Le cache Redis permet d'éviter des lectures répétées dans MongoDB et peut accélérer les réponses. Cependant, un test sur un petit catalogue en local ne suffit pas à démontrer un gain important en conditions réelles. Il devient réellement décisif lorsque :
+
+- le nombre de requêtes simultanées est élevé
+- les données sont coûteuses à récupérer ou à calculer
+- les mêmes données sont consultées fréquemment
+
+Q14. Les joueurs pourront voir l'ancien titre pendant 60 secondes maximum, car le cache Redis a un TTL de 60 secondes. Lorsqu'un administrateur modifie directement le titre dans MongoDB, la copie présente dans Redis n'est pas automatiquement mise à jour. Elle reste disponible jusqu'à son expiration.
+Pour réduire ce délai, on peut utiliser deux stratégies :
+
+- réduire la durée du TTL, par exemple à 10 secondes, afin d'actualiser plus souvent, mais cela sollicite plus souvent MongoDB
+- invalider le cache lors d'une modification, en supprimant la clé cache:catalogue:tous après la mise à jour du jeu
